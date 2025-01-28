@@ -3,6 +3,7 @@ package progress
 import (
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"time"
 )
@@ -15,10 +16,11 @@ type Progress struct {
 	mu sync.Mutex
 	w  io.Writer
 
-	pos int
-
-	ticker *time.Ticker
+	pos    int
 	states []State
+	ticker *time.Ticker
+
+	lastOutput string
 }
 
 func NewProgress(w io.Writer) *Progress {
@@ -59,7 +61,7 @@ func (p *Progress) StopAndClear() bool {
 	stopped := p.stop()
 	if stopped {
 		// clear all progress lines
-		for i := range p.pos {
+		for i := 0; i < p.pos; i++ {
 			if i > 0 {
 				fmt.Fprint(p.w, "\033[A")
 			}
@@ -81,30 +83,41 @@ func (p *Progress) render() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	fmt.Fprint(p.w, "\033[?25l")
-	defer fmt.Fprint(p.w, "\033[?25h")
-
-	// clear already rendered progress lines
-	for i := range p.pos {
-		if i > 0 {
-			fmt.Fprint(p.w, "\033[A")
-		}
-		fmt.Fprint(p.w, "\033[2K\033[1G")
+	// Hide cursor only once at start
+	if p.lastOutput == "" {
+		fmt.Fprint(p.w, "\033[?25l")
 	}
 
-	// render progress lines
+	// Move cursor up by number of lines we previously output
+	if lines := strings.Count(p.lastOutput, "\n"); lines > 0 {
+		fmt.Fprintf(p.w, "\033[%dA", lines)
+	}
+
+	// Build new output
+	var output strings.Builder
+	output.Grow(256)
+
 	for i, state := range p.states {
-		fmt.Fprint(p.w, state.String())
-		if i < len(p.states)-1 {
-			fmt.Fprint(p.w, "\n")
+		if i > 0 {
+			output.WriteString("\n")
 		}
+
+		// Clear entire line
+		output.WriteString("\033[2K")
+		// Move cursor to start of line
+		output.WriteString("\r")
+
+		output.WriteString(state.String())
 	}
 
+	// Write the new output
+	fmt.Fprint(p.w, output.String())
+	p.lastOutput = output.String()
 	p.pos = len(p.states)
 }
 
 func (p *Progress) start() {
-	p.ticker = time.NewTicker(100 * time.Millisecond)
+	p.ticker = time.NewTicker(60 * time.Millisecond)
 	for range p.ticker.C {
 		p.render()
 	}

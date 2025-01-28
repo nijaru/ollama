@@ -24,6 +24,8 @@ type Bar struct {
 
 	maxBuckets int
 	buckets    []bucket
+
+	maxWidth int
 }
 
 type bucket struct {
@@ -32,6 +34,11 @@ type bucket struct {
 }
 
 func NewBar(message string, maxValue, initialValue int64) *Bar {
+	termWidth, _, err := term.GetSize(int(os.Stderr.Fd()))
+	if err != nil {
+		termWidth = 80
+	}
+
 	b := Bar{
 		message:      message,
 		messageWidth: -1,
@@ -39,7 +46,8 @@ func NewBar(message string, maxValue, initialValue int64) *Bar {
 		initialValue: initialValue,
 		currentValue: initialValue,
 		started:      time.Now(),
-		maxBuckets:   10,
+		maxBuckets:   20,
+		maxWidth:     termWidth,
 	}
 
 	if initialValue >= maxValue {
@@ -62,11 +70,6 @@ func formatDuration(d time.Duration) string {
 }
 
 func (b *Bar) String() string {
-	termWidth, _, err := term.GetSize(int(os.Stderr.Fd()))
-	if err != nil {
-		termWidth = 80
-	}
-
 	var pre strings.Builder
 	if len(b.message) > 0 {
 		message := strings.TrimSpace(b.message)
@@ -130,9 +133,11 @@ func (b *Bar) String() string {
 	}
 
 	var mid strings.Builder
-	// add 5 extra spaces: 2 boundary characters and 1 space at each end
-	f := termWidth - pre.Len() - suf.Len() - 5
-	n := int(float64(f) * b.percent() / 100)
+	maxBarWidth := b.maxWidth - pre.Len() - suf.Len() - 5
+	if maxBarWidth < 10 {
+		maxBarWidth = 10
+	}
+	n := int(float64(maxBarWidth) * b.percent() / 100)
 
 	mid.WriteString(" ▕")
 
@@ -140,8 +145,8 @@ func (b *Bar) String() string {
 		mid.WriteString(repeat("█", n))
 	}
 
-	if f-n > 0 {
-		mid.WriteString(repeat(" ", f-n))
+	if maxBarWidth-n > 0 {
+		mid.WriteString(repeat(" ", maxBarWidth-n))
 	}
 
 	mid.WriteString("▏ ")
@@ -159,7 +164,6 @@ func (b *Bar) Set(value int64) {
 		b.stopped = time.Now()
 	}
 
-	// throttle bucket updates to 1 per second
 	if len(b.buckets) == 0 || time.Since(b.buckets[len(b.buckets)-1].updated) > time.Second {
 		b.buckets = append(b.buckets, bucket{
 			updated: time.Now(),
@@ -181,30 +185,38 @@ func (b *Bar) percent() float64 {
 }
 
 func (b *Bar) rate() float64 {
-	var numerator, denominator float64
+	// Use exponential moving average for smoother rate
+	const alpha = 0.1
+	var rate float64
 
 	if !b.stopped.IsZero() {
-		numerator = float64(b.currentValue - b.initialValue)
-		denominator = b.stopped.Sub(b.started).Round(time.Second).Seconds()
-	} else {
-		switch len(b.buckets) {
-		case 0:
-			// noop
-		case 1:
-			numerator = float64(b.buckets[0].value - b.initialValue)
-			denominator = b.buckets[0].updated.Sub(b.started).Round(time.Second).Seconds()
-		default:
-			first, last := b.buckets[0], b.buckets[len(b.buckets)-1]
-			numerator = float64(last.value - first.value)
-			denominator = last.updated.Sub(first.updated).Round(time.Second).Seconds()
+		duration := b.stopped.Sub(b.started).Seconds()
+		if duration <= 0 {
+			return 0
 		}
+		return float64(b.currentValue-b.initialValue) / duration
 	}
 
-	if denominator != 0 {
-		return numerator / denominator
+	switch len(b.buckets) {
+	case 0:
+		return 0
+	case 1:
+		duration := b.buckets[0].updated.Sub(b.started).Seconds()
+		if duration <= 0 {
+			return 0
+		}
+		rate = float64(b.buckets[0].value-b.initialValue) / duration
+	default:
+		first, last := b.buckets[0], b.buckets[len(b.buckets)-1]
+		duration := last.updated.Sub(first.updated).Seconds()
+		if duration <= 0 {
+			return rate
+		}
+		instantRate := float64(last.value-first.value) / duration
+		rate = alpha*instantRate + (1-alpha)*rate
 	}
 
-	return 0
+	return rate
 }
 
 func repeat(s string, n int) string {

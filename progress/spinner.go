@@ -1,7 +1,6 @@
 package progress
 
 import (
-	"fmt"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -10,9 +9,10 @@ import (
 type Spinner struct {
 	message      atomic.Value
 	messageWidth int
+	lastMessage  string
+	lastSpinner  string
 
 	parts []string
-
 	value int
 
 	ticker  *time.Ticker
@@ -40,23 +40,17 @@ func (s *Spinner) String() string {
 	var sb strings.Builder
 
 	if message, ok := s.message.Load().(string); ok && len(message) > 0 {
-		message := strings.TrimSpace(message)
+		message = strings.TrimSpace(message)
 		if s.messageWidth > 0 && len(message) > s.messageWidth {
 			message = message[:s.messageWidth]
 		}
-
-		fmt.Fprintf(&sb, "%s", message)
-		if padding := s.messageWidth - sb.Len(); padding > 0 {
-			sb.WriteString(strings.Repeat(" ", padding))
-		}
-
+		sb.WriteString(message)
 		sb.WriteString(" ")
 	}
 
 	if s.stopped.IsZero() {
 		spinner := s.parts[s.value]
 		sb.WriteString(spinner)
-		sb.WriteString(" ")
 	}
 
 	return sb.String()
@@ -73,7 +67,10 @@ func (s *Spinner) start() {
 }
 
 func (s *Spinner) Stop() {
-	if s.stopped.IsZero() {
-		s.stopped = time.Now()
-	}
+    if s.stopped.IsZero() {
+        s.stopped = time.Now()
+        if s.ticker != nil {
+            s.ticker.Stop()
+        }
+    }
 }
